@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.4
+// @version      1.5
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -9,6 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @connect      *
+// @connect      localhost
 // @homepageURL  https://github.com/hwiiza/yt-filler
 // @downloadURL  https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
 // @updateURL    https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
@@ -172,20 +173,35 @@
   }
   // txt の THUMBNAIL 絶対パスを GM_xmlhttpRequest(file://) で読み込み File 化
   function loadThumbFromPath(path, log, cb) {
-    if (typeof GM_xmlhttpRequest !== 'function') { log('✖ GM_xmlhttpRequest不可（スクリプト更新＆権限を確認）', true); return; }
+    const gm = (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest
+      : (typeof GM !== 'undefined' && GM && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM) : null);
+    if (!gm) { log('✖ GM_xmlhttpRequest不可（@grant未反映。スクリプトを最新へ更新）', true); return; }
     const url = toFileUrl(path);
     log('… サムネ読込: ' + url);
-    GM_xmlhttpRequest({
-      method: 'GET', url, responseType: 'blob',
-      onload: (res) => {
-        const blob = res.response;
-        if (!blob || !blob.size) { log('✖ サムネ空/取得失敗（Tampermonkeyの「ファイルURLアクセス許可」をON、パスを確認）', true); return; }
-        const name = url.split('/').pop() || 'thumbnail.jpg';
-        const type = blob.type || (/\.png$/i.test(name) ? 'image/png' : 'image/jpeg');
-        cb(new File([blob], name, { type }));
-      },
-      onerror: () => log('✖ サムネ取得エラー（chrome://extensions でTampermonkeyの「ファイルURLアクセス許可」をON）', true),
-    });
+    let done = false;
+    const tryReq = (responseType) => {
+      try {
+        gm({
+          method: 'GET', url, responseType,
+          onload: (res) => {
+            if (done) return;
+            let blob = res.response;
+            if (blob && !(blob instanceof Blob)) { try { blob = new Blob([blob]); } catch (e) {} }
+            if (!blob || !blob.size) { log('✖ サムネ空 status=' + res.status + ' rt=' + responseType, true); return; }
+            done = true;
+            const name = url.split('/').pop() || 'thumbnail.jpg';
+            const type = (blob.type) || (/\.png$/i.test(name) ? 'image/png' : 'image/jpeg');
+            cb(new File([blob], name, { type }));
+          },
+          onerror: (e) => {
+            log('✖ 取得エラー rt=' + responseType + ': ' + JSON.stringify({ status: e && e.status, statusText: e && e.statusText, error: e && e.error, readyState: e && e.readyState }), true);
+            if (responseType === 'blob' && !done) { log('… arraybufferで再試行'); tryReq('arraybuffer'); }
+          },
+          ontimeout: () => log('✖ サムネ取得タイムアウト rt=' + responseType, true),
+        });
+      } catch (err) { log('✖ GM呼び出し例外: ' + err.message, true); }
+    };
+    tryReq('blob');
   }
   // 優先: 手動で選んだFile → 無ければ txt の THUMBNAIL パス
   function setThumbnail(thumbFile, data, log) {
