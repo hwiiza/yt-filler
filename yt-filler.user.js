@@ -1,15 +1,12 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.5
+// @version      1.6
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
-// @grant        GM_xmlhttpRequest
-// @connect      *
-// @connect      localhost
 // @homepageURL  https://github.com/hwiiza/yt-filler
 // @downloadURL  https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
 // @updateURL    https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
@@ -18,6 +15,13 @@
   'use strict';
 
   const LS_KEY = 'crimson_yt_filler_payload';
+  const THUMB_KEY = 'crimson_yt_filler_thumb';   // {name, durl} を保存（pick once→自動再利用）
+
+  // GMストレージ薄ラッパ（無ければlocalStorage）
+  const store = {
+    get: (k) => (typeof GM_getValue === 'function') ? GM_getValue(k, '') : localStorage.getItem(k),
+    set: (k, v) => (typeof GM_setValue === 'function') ? GM_setValue(k, v) : localStorage.setItem(k, v),
+  };
 
   // ---------- パーサ ----------
   // "==================== SECTION ====================" 区切りでセクション分割
@@ -163,52 +167,23 @@
       return true;
     } catch (e) { log('✖ サムネ設定失敗: ' + e.message, true); return false; }
   }
-  // 絶対パス → file:/// URL
-  function toFileUrl(p) {
-    p = (p || '').trim().replace(/\\/g, '/');
-    if (/^file:/i.test(p)) return p;
-    if (/^[a-zA-Z]:\//.test(p)) return 'file:///' + p;   // C:/... → file:///C:/...
-    if (/^\//.test(p)) return 'file://' + p;             // /Users/... など
-    return p;
+  // dataURL → File（GMストレージ保存→復元用）
+  function dataURLtoFile(durl, name) {
+    const i = durl.indexOf(',');
+    const meta = durl.slice(0, i), b64 = durl.slice(i + 1);
+    const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
+    const bin = atob(b64), arr = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
+    return new File([arr], name || 'thumbnail.jpg', { type: mime });
   }
-  // txt の THUMBNAIL 絶対パスを GM_xmlhttpRequest(file://) で読み込み File 化
-  function loadThumbFromPath(path, log, cb) {
-    const gm = (typeof GM_xmlhttpRequest === 'function') ? GM_xmlhttpRequest
-      : (typeof GM !== 'undefined' && GM && GM.xmlHttpRequest ? GM.xmlHttpRequest.bind(GM) : null);
-    if (!gm) { log('✖ GM_xmlhttpRequest不可（@grant未反映。スクリプトを最新へ更新）', true); return; }
-    const url = toFileUrl(path);
-    log('… サムネ読込: ' + url);
-    let done = false;
-    const tryReq = (responseType) => {
-      try {
-        gm({
-          method: 'GET', url, responseType,
-          onload: (res) => {
-            if (done) return;
-            let blob = res.response;
-            if (blob && !(blob instanceof Blob)) { try { blob = new Blob([blob]); } catch (e) {} }
-            if (!blob || !blob.size) { log('✖ サムネ空 status=' + res.status + ' rt=' + responseType, true); return; }
-            done = true;
-            const name = url.split('/').pop() || 'thumbnail.jpg';
-            const type = (blob.type) || (/\.png$/i.test(name) ? 'image/png' : 'image/jpeg');
-            cb(new File([blob], name, { type }));
-          },
-          onerror: (e) => {
-            log('✖ 取得エラー rt=' + responseType + ': ' + JSON.stringify({ status: e && e.status, statusText: e && e.statusText, error: e && e.error, readyState: e && e.readyState }), true);
-            if (responseType === 'blob' && !done) { log('… arraybufferで再試行'); tryReq('arraybuffer'); }
-          },
-          ontimeout: () => log('✖ サムネ取得タイムアウト rt=' + responseType, true),
-        });
-      } catch (err) { log('✖ GM呼び出し例外: ' + err.message, true); }
-    };
-    tryReq('blob');
-  }
-  // 優先: 手動で選んだFile → 無ければ txt の THUMBNAIL パス
+  // basename 抽出（パス表示用）
+  function baseName(p) { return (p || '').trim().replace(/\\/g, '/').split('/').pop() || ''; }
+
+  // 優先: 手動で選んだ/復元したFile → 無ければ案内（Chrome MV3ではパス自動読込不可）
   function setThumbnail(thumbFile, data, log) {
     if (thumbFile) return applyThumbFile(thumbFile, log);
-    const path = data && data.thumbnail;
-    if (path) { loadThumbFromPath(path, log, (file) => applyThumbFile(file, log)); return true; }
-    log('✖ サムネ未指定（②で画像選択 か txtにTHUMBNAILパスを記載）', true);
+    const hint = (data && data.thumbnail) ? '「' + baseName(data.thumbnail) + '」を ②サムネ画像 で選択してください' : '②サムネ画像 で画像を選択してください';
+    log('✖ サムネ画像が未読込。' + hint + '（一度選べば次回以降は自動再利用）', true);
     return false;
   }
   // 対象視聴者「いいえ、子ども向けではありません」を選択
@@ -273,16 +248,27 @@
     let data = null;
     let thumbFile = null;
     const showInfo = () => {
-      if (!data) { info.textContent = '未読込'; return; }
-      const th = data.thumbnail ? ('\nThumb: ' + data.thumbnail) : '';
-      info.textContent = `Title: ${data.title}\nDesc: ${data.description.length}字 / Tags: ${data.tags.length}個` + th;
+      const lines = [];
+      if (data) {
+        lines.push(`Title: ${data.title}`);
+        lines.push(`Desc: ${data.description.length}字 / Tags: ${data.tags.length}個`);
+      }
+      if (thumbFile) lines.push('Thumb: ' + thumbFile.name + '（保存済・自動再利用）');
+      else if (data && data.thumbnail) lines.push('Thumb: ' + baseName(data.thumbnail) + '（②で選択して下さい）');
+      info.textContent = lines.length ? lines.join('\n') : '未読込';
     };
 
-    // 保存値から復元（GM_storage / 無ければlocalStorageにフォールバック）
+    // txt を復元
     try {
-      const saved = (typeof GM_getValue === 'function') ? GM_getValue(LS_KEY, '') : localStorage.getItem(LS_KEY);
-      if (saved) { data = JSON.parse(saved); showInfo(); log('（前回の読込内容を復元）'); }
+      const saved = store.get(LS_KEY);
+      if (saved) { data = JSON.parse(saved); log('（前回の読込内容を復元）'); }
     } catch (e) {}
+    // サムネ画像を復元（pick once → 自動再利用）
+    try {
+      const t = store.get(THUMB_KEY);
+      if (t) { const o = JSON.parse(t); thumbFile = dataURLtoFile(o.durl, o.name); log('（保存済サムネを復元: ' + o.name + '）'); }
+    } catch (e) {}
+    showInfo();
 
     box.querySelector('#cyt-file').addEventListener('change', (ev) => {
       const f = ev.target.files[0];
@@ -291,8 +277,7 @@
       r.onload = () => {
         try {
           data = parse(r.result);
-          const payload = JSON.stringify(data);
-          if (typeof GM_setValue === 'function') GM_setValue(LS_KEY, payload); else localStorage.setItem(LS_KEY, payload);
+          store.set(LS_KEY, JSON.stringify(data));
           showInfo();
           log('✔ 読込OK: ' + f.name);
         } catch (e) { log('✖ パース失敗: ' + e.message, true); }
@@ -304,7 +289,13 @@
       const f = ev.target.files[0];
       if (!f) return;
       thumbFile = f;
-      log('✔ サムネ画像: ' + f.name);
+      const r = new FileReader();
+      r.onload = () => {
+        try { store.set(THUMB_KEY, JSON.stringify({ name: f.name, durl: r.result })); } catch (e) { log('（サムネ保存失敗: ' + e.message + '）', true); }
+        showInfo();
+        log('✔ サムネ画像: ' + f.name + '（保存→次回自動再利用）');
+      };
+      r.readAsDataURL(f);
     });
 
     box.querySelectorAll('.cyt-b').forEach(b => b.addEventListener('click', async () => {
