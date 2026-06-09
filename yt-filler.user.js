@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.2
+// @version      1.3
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -135,6 +135,45 @@
     return true;
   }
 
+  // YouTube側のサムネ用 file input を探す（自分のパネル内の入力は除外）
+  function getThumbInput() {
+    const sels = ['ytcp-thumbnails-compact-editor input[type="file"]', 'input#file-loader[type="file"]', 'input[type="file"][accept*="image"]', 'input[type="file"]'];
+    for (const s of sels) {
+      for (const el of document.querySelectorAll(s)) {
+        if (el.closest('#crimson-yt-panel')) continue;
+        return el;
+      }
+    }
+    return null;
+  }
+  // パネルで選んだ画像Fileを YouTube のサムネ入力へ流し込む
+  function setThumbnail(thumbFile, log) {
+    if (!thumbFile) { log('✖ 先に「②サムネ画像」を読み込んでください', true); return false; }
+    const input = getThumbInput();
+    if (!input) { log('✖ サムネのファイル入力が見つかりません（詳細画面でサムネ欄を表示）', true); return false; }
+    try {
+      const dt = new DataTransfer();
+      dt.items.add(thumbFile);
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      log('✔ サムネ設定: ' + thumbFile.name + '（プレビュー反映を確認）');
+      return true;
+    } catch (e) { log('✖ サムネ設定失敗: ' + e.message, true); return false; }
+  }
+  // 対象視聴者「いいえ、子ども向けではありません」を選択
+  function setNotForKids(log) {
+    let el = document.querySelector('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]');
+    if (!el) {
+      const cands = [...document.querySelectorAll('tp-yt-paper-radio-button, ytcp-radio-button, [role="radio"]')];
+      el = cands.find(c => /子ども向けではありません|子供向けではありません/.test(c.textContent || ''))
+        || cands.find(c => /not made for kids|not .* for kids/i.test(c.textContent || ''));
+    }
+    if (!el) { log('✖ 「子ども向けではありません」が見つかりません（対象視聴者セクションを表示）', true); return false; }
+    el.click();
+    log('✔ 視聴者: いいえ、子ども向けではありません');
+    return true;
+  }
+
   // ---------- UI ----------
   function buildPanel() {
     if (document.getElementById('crimson-yt-panel')) return;
@@ -148,14 +187,17 @@
     ]);
     const fileInput = el('input', { id: 'cyt-file', type: 'file', accept: '.txt', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
     const label = el('label', { style: 'display:block' }, ['① txtを読込', fileInput]);
+    const thumbInput = el('input', { id: 'cyt-thumb', type: 'file', accept: 'image/*', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
+    const thumbLabel = el('label', { style: 'display:block' }, ['② サムネ画像(任意)', thumbInput]);
     const infoDiv = el('div', { id: 'cyt-info', text: '未読込', style: 'font-size:11px;color:#aaa;white-space:pre-wrap;min-height:34px;background:#000;padding:5px;border-radius:5px' });
     const mkBtn = (act, txt, extra) => el('button', Object.assign({ 'data-act': act, class: 'cyt-b', text: txt }, extra ? { style: extra } : {}));
     const grid = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:5px' }, [
       mkBtn('title', 'タイトル'), mkBtn('desc', '概要欄'), mkBtn('tags', 'タグ'),
+      mkBtn('thumb', 'サムネ'), mkBtn('kids', '子供向けでない'),
       mkBtn('all', '全部設定', 'background:#c00;border-color:#c00'),
     ]);
     const logDiv = el('div', { id: 'cyt-log', style: 'font-size:11px;max-height:120px;overflow:auto;background:#000;padding:5px;border-radius:5px' });
-    const bodyDiv = el('div', { id: 'cyt-body', style: 'padding:10px;display:flex;flex-direction:column;gap:7px' }, [label, infoDiv, grid, logDiv]);
+    const bodyDiv = el('div', { id: 'cyt-body', style: 'padding:10px;display:flex;flex-direction:column;gap:7px' }, [label, thumbLabel, infoDiv, grid, logDiv]);
     box.appendChild(head);
     box.appendChild(bodyDiv);
     document.body.appendChild(box);
@@ -178,6 +220,7 @@
     };
 
     let data = null;
+    let thumbFile = null;
     const showInfo = () => {
       if (!data) { info.textContent = '未読込'; return; }
       info.textContent = `Title: ${data.title}\nDesc: ${data.description.length}字 / Tags: ${data.tags.length}個`;
@@ -205,18 +248,33 @@
       r.readAsText(f, 'UTF-8');
     });
 
+    box.querySelector('#cyt-thumb').addEventListener('change', (ev) => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      thumbFile = f;
+      log('✔ サムネ画像: ' + f.name);
+    });
+
     box.querySelectorAll('.cyt-b').forEach(b => b.addEventListener('click', async () => {
-      if (!data) { log('先に txt を読み込んでください', true); return; }
       const act = b.dataset.act;
+      // txtが要るアクションのみ事前チェック
+      if ((act === 'title' || act === 'desc' || act === 'tags' || act === 'all') && !data) {
+        log('先に txt を読み込んでください', true); return;
+      }
       if (act === 'title') setTitle(data, log);
       else if (act === 'desc') setDesc(data, log);
       else if (act === 'tags') await setTags(data, log);
+      else if (act === 'thumb') setThumbnail(thumbFile, log);
+      else if (act === 'kids') setNotForKids(log);
       else if (act === 'all') {
         setTitle(data, log);
         await sleep(300);
         setDesc(data, log);
         await sleep(300);
         await setTags(data, log);
+        await sleep(300);
+        setNotForKids(log);
+        if (thumbFile) { await sleep(300); setThumbnail(thumbFile, log); }
       }
     }));
 
