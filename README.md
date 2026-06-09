@@ -36,10 +36,21 @@ Deep House Mix 2026 | Raven & Midnight Wings (Hypnotic Groove)
 
 ==================== TAGS (comma-separated, 10) ====================
 tag one, tag two, tag three, ...
+
+==================== THUMBNAIL ====================
+C:\path\to\thumbnail.jpg
 ```
 
 - 文字コードは **UTF-8**（BOM は自動除去）。
 - `TAGS` はカンマ区切り。
+- `THUMBNAIL`（任意）… サムネ画像の**絶対パス**。「サムネ」ボタンでこのパスの画像を読み込んで設定します（パネル②で手動選択した画像があればそちらを優先）。
+
+### THUMBNAIL を使う場合の前提（一回だけ設定）
+パスからの読み込みは `GM_xmlhttpRequest` の `file://` アクセスを使うため、Tampermonkey に**ファイルURLアクセス許可**が必要です：
+
+`chrome://extensions` → Tampermonkey「詳細」→ **「ファイルの URL へのアクセスを許可する」を ON**
+
+> 許可しない場合は、パネルの **② サムネ画像** で画像を手動選択する方式（ファイルURLアクセス不要）を使ってください。
 
 ## 技術メモ
 

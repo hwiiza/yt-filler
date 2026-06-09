@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.3
+// @version      1.4
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @homepageURL  https://github.com/hwiiza/yt-filler
 // @downloadURL  https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
 // @updateURL    https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
@@ -39,6 +41,7 @@
       title: get('TITLE').trim(),
       description: get('DESCRIPTION'),
       tags: get('TAGS').split(',').map(s => s.trim()).filter(Boolean),
+      thumbnail: get('THUMBNAIL').trim(),
     };
   }
 
@@ -146,19 +149,51 @@
     }
     return null;
   }
-  // パネルで選んだ画像Fileを YouTube のサムネ入力へ流し込む
-  function setThumbnail(thumbFile, log) {
-    if (!thumbFile) { log('✖ 先に「②サムネ画像」を読み込んでください', true); return false; }
+  // 画像File を YouTube のサムネ入力へ流し込む
+  function applyThumbFile(file, log) {
     const input = getThumbInput();
     if (!input) { log('✖ サムネのファイル入力が見つかりません（詳細画面でサムネ欄を表示）', true); return false; }
     try {
       const dt = new DataTransfer();
-      dt.items.add(thumbFile);
+      dt.items.add(file);
       input.files = dt.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      log('✔ サムネ設定: ' + thumbFile.name + '（プレビュー反映を確認）');
+      log('✔ サムネ設定: ' + file.name + '（プレビュー反映を確認）');
       return true;
     } catch (e) { log('✖ サムネ設定失敗: ' + e.message, true); return false; }
+  }
+  // 絶対パス → file:/// URL
+  function toFileUrl(p) {
+    p = (p || '').trim().replace(/\\/g, '/');
+    if (/^file:/i.test(p)) return p;
+    if (/^[a-zA-Z]:\//.test(p)) return 'file:///' + p;   // C:/... → file:///C:/...
+    if (/^\//.test(p)) return 'file://' + p;             // /Users/... など
+    return p;
+  }
+  // txt の THUMBNAIL 絶対パスを GM_xmlhttpRequest(file://) で読み込み File 化
+  function loadThumbFromPath(path, log, cb) {
+    if (typeof GM_xmlhttpRequest !== 'function') { log('✖ GM_xmlhttpRequest不可（スクリプト更新＆権限を確認）', true); return; }
+    const url = toFileUrl(path);
+    log('… サムネ読込: ' + url);
+    GM_xmlhttpRequest({
+      method: 'GET', url, responseType: 'blob',
+      onload: (res) => {
+        const blob = res.response;
+        if (!blob || !blob.size) { log('✖ サムネ空/取得失敗（Tampermonkeyの「ファイルURLアクセス許可」をON、パスを確認）', true); return; }
+        const name = url.split('/').pop() || 'thumbnail.jpg';
+        const type = blob.type || (/\.png$/i.test(name) ? 'image/png' : 'image/jpeg');
+        cb(new File([blob], name, { type }));
+      },
+      onerror: () => log('✖ サムネ取得エラー（chrome://extensions でTampermonkeyの「ファイルURLアクセス許可」をON）', true),
+    });
+  }
+  // 優先: 手動で選んだFile → 無ければ txt の THUMBNAIL パス
+  function setThumbnail(thumbFile, data, log) {
+    if (thumbFile) return applyThumbFile(thumbFile, log);
+    const path = data && data.thumbnail;
+    if (path) { loadThumbFromPath(path, log, (file) => applyThumbFile(file, log)); return true; }
+    log('✖ サムネ未指定（②で画像選択 か txtにTHUMBNAILパスを記載）', true);
+    return false;
   }
   // 対象視聴者「いいえ、子ども向けではありません」を選択
   function setNotForKids(log) {
@@ -223,7 +258,8 @@
     let thumbFile = null;
     const showInfo = () => {
       if (!data) { info.textContent = '未読込'; return; }
-      info.textContent = `Title: ${data.title}\nDesc: ${data.description.length}字 / Tags: ${data.tags.length}個`;
+      const th = data.thumbnail ? ('\nThumb: ' + data.thumbnail) : '';
+      info.textContent = `Title: ${data.title}\nDesc: ${data.description.length}字 / Tags: ${data.tags.length}個` + th;
     };
 
     // 保存値から復元（GM_storage / 無ければlocalStorageにフォールバック）
@@ -264,7 +300,7 @@
       if (act === 'title') setTitle(data, log);
       else if (act === 'desc') setDesc(data, log);
       else if (act === 'tags') await setTags(data, log);
-      else if (act === 'thumb') setThumbnail(thumbFile, log);
+      else if (act === 'thumb') setThumbnail(thumbFile, data, log);
       else if (act === 'kids') setNotForKids(log);
       else if (act === 'all') {
         setTitle(data, log);
@@ -274,7 +310,7 @@
         await setTags(data, log);
         await sleep(300);
         setNotForKids(log);
-        if (thumbFile) { await sleep(300); setThumbnail(thumbFile, log); }
+        if (thumbFile || (data && data.thumbnail)) { await sleep(300); setThumbnail(thumbFile, data, log); }
       }
     }));
 
