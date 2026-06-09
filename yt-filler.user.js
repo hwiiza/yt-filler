@@ -1,0 +1,247 @@
+// ==UserScript==
+// @name         YouTube 概要欄フィラー (yt-filler)
+// @namespace    hwiiza.yt-filler
+// @version      1.2
+// @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
+// @match        https://studio.youtube.com/*
+// @run-at       document-idle
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @homepageURL  https://github.com/hwiiza/yt-filler
+// @downloadURL  https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
+// @updateURL    https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
+// ==/UserScript==
+(function () {
+  'use strict';
+
+  const LS_KEY = 'crimson_yt_filler_payload';
+
+  // ---------- パーサ ----------
+  // "==================== SECTION ====================" 区切りでセクション分割
+  function parse(text) {
+    text = text.replace(/\r\n/g, '\n').replace(/^﻿/, '');
+    // 行ベースでヘッダ区切りごとにセクションへ振り分け
+    const lines = text.split('\n');
+    let cur = null;
+    const buf = {};
+    const headerRe = /^=+\s*(.+?)\s*=+\s*$/;
+    for (const line of lines) {
+      const hm = line.match(headerRe);
+      if (hm) { cur = hm[1].trim().toUpperCase(); buf[cur] = []; continue; }
+      if (cur) buf[cur].push(line);
+    }
+    const get = (key) => {
+      const k = Object.keys(buf).find(x => x.startsWith(key));
+      return k ? buf[k].join('\n').replace(/^\n+|\n+$/g, '') : '';
+    };
+    return {
+      channel: get('CHANNEL'),
+      title: get('TITLE').trim(),
+      description: get('DESCRIPTION'),
+      tags: get('TAGS').split(',').map(s => s.trim()).filter(Boolean),
+    };
+  }
+
+  // ---------- DOM ヘルパ ----------
+  const isVisible = (e) => !!(e && e.getClientRects().length && e.offsetParent !== null);
+  // 複数セレクタ候補から「可視」な要素を優先して返す（無ければ最初に見つかった物）
+  const q = (sels) => {
+    let first = null;
+    for (const s of sels) {
+      for (const el of document.querySelectorAll(s)) {
+        if (!first) first = el;
+        if (isVisible(el)) return el;
+      }
+    }
+    return first;
+  };
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // 要素生成ヘルパ（innerHTML不使用＝Trusted Types環境でも安全）
+  function el(tag, attrs, kids) {
+    const e = document.createElement(tag);
+    if (attrs) for (const k in attrs) {
+      if (k === 'style') e.style.cssText = attrs[k];
+      else if (k === 'text') e.textContent = attrs[k];
+      else e.setAttribute(k, attrs[k]);
+    }
+    if (kids) for (const c of kids) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    return e;
+  }
+
+  // React/Polymer の <input>/<textarea> に確実に値を入れる（native setter + input/change）
+  function setNativeValue(el, v) {
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function getTitleBox() {
+    return q(['#title-textarea #textbox', 'ytcp-social-suggestions-textbox[id="title-textarea"] #textbox', '#title #textbox']);
+  }
+  function getDescBox() {
+    return q(['#description-textarea #textbox', 'ytcp-social-suggestions-textbox[id="description-textarea"] #textbox', '#description #textbox']);
+  }
+  function getTagsInput() {
+    return q(['#tags-container #text-input', '#tags input#text-input', 'ytcp-form-input-container[id*="tags"] input', '#text-input.ytcp-chip-bar', 'input[aria-label*="tag" i]']);
+  }
+
+  // contenteditable に確実に入れる（Polymer の input イベントを発火）
+  function setEditable(el, text) {
+    el.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand('delete', false, null);
+    document.execCommand('insertText', false, text);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  async function commitTag(input, tag) {
+    input.focus();
+    setNativeValue(input, '');      // 既存入力中の文字をクリア
+    setNativeValue(input, tag);     // native setter で値を反映
+    await sleep(60);
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      input.dispatchEvent(new KeyboardEvent(type, { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+    }
+    await sleep(120);
+  }
+
+  // ---------- アクション ----------
+  function setTitle(data, log) {
+    const el = getTitleBox();
+    if (!el) { log('✖ タイトル欄が見つかりません（アップロード/詳細編集画面を開いて）', true); return false; }
+    setEditable(el, data.title);
+    log('✔ タイトル設定: ' + data.title);
+    return true;
+  }
+  function setDesc(data, log) {
+    const el = getDescBox();
+    if (!el) { log('✖ 概要欄が見つかりません（アップロード/詳細編集画面を開いて）', true); return false; }
+    setEditable(el, data.description);
+    log('✔ 概要欄設定: ' + data.description.length + '文字');
+    return true;
+  }
+  async function setTags(data, log) {
+    const input = getTagsInput();
+    if (!input) { log('✖ タグ入力欄が見つかりません（「すべて表示」を押してタグ欄を表示して）', true); return false; }
+    for (const t of data.tags) { await commitTag(input, t); }
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    log('✔ タグ設定: ' + data.tags.length + '個（反映を目視確認してください）');
+    return true;
+  }
+
+  // ---------- UI ----------
+  function buildPanel() {
+    if (document.getElementById('crimson-yt-panel')) return;
+    const box = document.createElement('div');
+    box.id = 'crimson-yt-panel';
+    box.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;width:300px;background:#111;color:#eee;border:1px solid #e11;border-radius:10px;font:12px/1.5 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);overflow:hidden';
+
+    const head = el('div', { id: 'cyt-head', style: 'background:#c00;padding:8px 10px;font-weight:700;cursor:move;display:flex;justify-content:space-between;align-items:center' }, [
+      el('span', { text: '🔴 yt-filler' }),
+      el('span', { id: 'cyt-min', text: '_', style: 'cursor:pointer' }),
+    ]);
+    const fileInput = el('input', { id: 'cyt-file', type: 'file', accept: '.txt', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
+    const label = el('label', { style: 'display:block' }, ['① txtを読込', fileInput]);
+    const infoDiv = el('div', { id: 'cyt-info', text: '未読込', style: 'font-size:11px;color:#aaa;white-space:pre-wrap;min-height:34px;background:#000;padding:5px;border-radius:5px' });
+    const mkBtn = (act, txt, extra) => el('button', Object.assign({ 'data-act': act, class: 'cyt-b', text: txt }, extra ? { style: extra } : {}));
+    const grid = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:5px' }, [
+      mkBtn('title', 'タイトル'), mkBtn('desc', '概要欄'), mkBtn('tags', 'タグ'),
+      mkBtn('all', '全部設定', 'background:#c00;border-color:#c00'),
+    ]);
+    const logDiv = el('div', { id: 'cyt-log', style: 'font-size:11px;max-height:120px;overflow:auto;background:#000;padding:5px;border-radius:5px' });
+    const bodyDiv = el('div', { id: 'cyt-body', style: 'padding:10px;display:flex;flex-direction:column;gap:7px' }, [label, infoDiv, grid, logDiv]);
+    box.appendChild(head);
+    box.appendChild(bodyDiv);
+    document.body.appendChild(box);
+
+    if (!document.getElementById('crimson-yt-style')) {
+      const style = document.createElement('style');
+      style.id = 'crimson-yt-style';
+      // ホストCSSとの衝突回避のため #crimson-yt-panel 配下にスコープ
+      style.textContent = '#crimson-yt-panel *{box-sizing:border-box}#crimson-yt-panel .cyt-b{background:#222;color:#eee;border:1px solid #555;border-radius:6px;padding:6px;cursor:pointer;font-size:12px}#crimson-yt-panel .cyt-b:hover{background:#333}';
+      document.head.appendChild(style);
+    }
+
+    const info = box.querySelector('#cyt-info');
+    const logEl = box.querySelector('#cyt-log');
+    const log = (msg, err) => {
+      const d = document.createElement('div');
+      d.textContent = msg;
+      if (err) d.style.color = '#f66';
+      logEl.prepend(d);
+    };
+
+    let data = null;
+    const showInfo = () => {
+      if (!data) { info.textContent = '未読込'; return; }
+      info.textContent = `Title: ${data.title}\nDesc: ${data.description.length}字 / Tags: ${data.tags.length}個`;
+    };
+
+    // 保存値から復元（GM_storage / 無ければlocalStorageにフォールバック）
+    try {
+      const saved = (typeof GM_getValue === 'function') ? GM_getValue(LS_KEY, '') : localStorage.getItem(LS_KEY);
+      if (saved) { data = JSON.parse(saved); showInfo(); log('（前回の読込内容を復元）'); }
+    } catch (e) {}
+
+    box.querySelector('#cyt-file').addEventListener('change', (ev) => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          data = parse(r.result);
+          const payload = JSON.stringify(data);
+          if (typeof GM_setValue === 'function') GM_setValue(LS_KEY, payload); else localStorage.setItem(LS_KEY, payload);
+          showInfo();
+          log('✔ 読込OK: ' + f.name);
+        } catch (e) { log('✖ パース失敗: ' + e.message, true); }
+      };
+      r.readAsText(f, 'UTF-8');
+    });
+
+    box.querySelectorAll('.cyt-b').forEach(b => b.addEventListener('click', async () => {
+      if (!data) { log('先に txt を読み込んでください', true); return; }
+      const act = b.dataset.act;
+      if (act === 'title') setTitle(data, log);
+      else if (act === 'desc') setDesc(data, log);
+      else if (act === 'tags') await setTags(data, log);
+      else if (act === 'all') {
+        setTitle(data, log);
+        await sleep(300);
+        setDesc(data, log);
+        await sleep(300);
+        await setTags(data, log);
+      }
+    }));
+
+    // 最小化
+    box.querySelector('#cyt-min').addEventListener('click', () => {
+      const body = box.querySelector('#cyt-body');
+      body.style.display = body.style.display === 'none' ? 'flex' : 'none';
+    });
+
+    // ドラッグ移動
+    (function drag() {
+      const head = box.querySelector('#cyt-head');
+      let sx, sy, ox, oy, on = false;
+      head.addEventListener('mousedown', e => { if (e.target.id === 'cyt-min') return; on = true; sx = e.clientX; sy = e.clientY; const r = box.getBoundingClientRect(); ox = r.left; oy = r.top; e.preventDefault(); });
+      document.addEventListener('mousemove', e => { if (!on) return; box.style.left = (ox + e.clientX - sx) + 'px'; box.style.top = (oy + e.clientY - sy) + 'px'; box.style.right = 'auto'; box.style.bottom = 'auto'; });
+      document.addEventListener('mouseup', () => on = false);
+    })();
+  }
+
+  // SPA対策: 冪等な init を一定間隔で呼び、UIが消えたら再注入（§2）
+  const init = () => {
+    if (!document.body) return;
+    if (document.getElementById('crimson-yt-panel')) return;
+    buildPanel();
+  };
+  init();
+  setInterval(init, 1500);
+})();
