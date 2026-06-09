@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.6
+// @version      1.7
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -23,24 +23,35 @@
     set: (k, v) => (typeof GM_setValue === 'function') ? GM_setValue(k, v) : localStorage.setItem(k, v),
   };
 
-  // ---------- パーサ ----------
-  // "==================== SECTION ====================" 区切りでセクション分割
+  // ---------- パーサ（2形式対応） ----------
+  // A) インライン見出し:  ==================== TITLE ====================
+  // B) 罫線サンドイッチ:  ════ / TITLE（…） / ════  （見出しが別行・罫線は = か ═）
   function parse(text) {
     text = text.replace(/\r\n/g, '\n').replace(/^﻿/, '');
-    // 行ベースでヘッダ区切りごとにセクションへ振り分け
-    const lines = text.split('\n');
-    let cur = null;
+    const KEYS = ['TITLE', 'DESCRIPTION', 'TAGS', 'THUMBNAIL', 'VIDEO', 'NOTES', 'NOTE', 'CHANNEL'];
+    const findKey = (s) => { const u = (s || '').trim().toUpperCase(); return KEYS.find(k => u.startsWith(k)) || null; };
     const buf = {};
-    const headerRe = /^=+\s*(.+?)\s*=+\s*$/;
-    for (const line of lines) {
-      const hm = line.match(headerRe);
-      if (hm) { cur = hm[1].trim().toUpperCase(); buf[cur] = []; continue; }
+    let cur = null, prevDivider = false;
+    for (const line of text.split('\n')) {
+      // 罫線のみの行（= か ═ が3つ以上・他は空白のみ）
+      if (/^[\s=═]{3,}$/.test(line) && /[=═]/.test(line)) { prevDivider = true; continue; }
+      // A) インライン見出し
+      const inline = line.match(/^[=═]{2,}\s*(.+?)\s*[=═]{2,}\s*$/);
+      if (inline) {
+        const k = findKey(inline[1]);
+        if (k) { cur = k; buf[k] = buf[k] || []; }
+        prevDivider = false; continue;
+      }
+      // B) 罫線直後の既知ラベル行を見出しとみなす
+      if (prevDivider) {
+        prevDivider = false;
+        const k = findKey(line);
+        if (k) { cur = k; buf[k] = buf[k] || []; continue; }
+        // 既知ラベルでなければ本文として扱う（下へ）
+      }
       if (cur) buf[cur].push(line);
     }
-    const get = (key) => {
-      const k = Object.keys(buf).find(x => x.startsWith(key));
-      return k ? buf[k].join('\n').replace(/^\n+|\n+$/g, '') : '';
-    };
+    const get = (k) => (buf[k] ? buf[k].join('\n').replace(/^\n+|\n+$/g, '') : '');
     return {
       channel: get('CHANNEL'),
       title: get('TITLE').trim(),
