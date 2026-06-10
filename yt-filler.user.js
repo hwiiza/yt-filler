@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.7
+// @version      1.8
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -332,11 +332,16 @@
       }
     }));
 
-    // 最小化
-    box.querySelector('#cyt-min').addEventListener('click', () => {
-      const body = box.querySelector('#cyt-body');
-      body.style.display = body.style.display === 'none' ? 'flex' : 'none';
-    });
+    // 最小化（最小化時は必ず右下へドッキング）
+    const minSpan = box.querySelector('#cyt-min');
+    const dockBR = () => { box.style.left = 'auto'; box.style.top = 'auto'; box.style.right = '16px'; box.style.bottom = '16px'; };
+    const setMin = (min) => {
+      bodyDiv.style.display = min ? 'none' : 'flex';
+      minSpan.textContent = min ? '▢' : '_';
+      if (min) dockBR();   // 移動後でも最小化したら右下に戻す
+    };
+    minSpan.addEventListener('click', () => setMin(bodyDiv.style.display !== 'none'));
+    setMin(true);   // デフォルトは最小化
 
     // ドラッグ移動
     (function drag() {
