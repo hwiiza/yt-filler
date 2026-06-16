@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.8
+// @version      1.10
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -15,7 +15,7 @@
   'use strict';
 
   const LS_KEY = 'crimson_yt_filler_payload';
-  const THUMB_KEY = 'crimson_yt_filler_thumb';   // {name, durl} を保存（pick once→自動再利用）
+  const THUMB_KEY = 'crimson_yt_filler_thumb';   // 旧: 自動再利用用。現在は保存せず毎回選択（残骸の掃除に使用）
 
   // GMストレージ薄ラッパ（無ければlocalStorage）
   const store = {
@@ -178,15 +178,6 @@
       return true;
     } catch (e) { log('✖ サムネ設定失敗: ' + e.message, true); return false; }
   }
-  // dataURL → File（GMストレージ保存→復元用）
-  function dataURLtoFile(durl, name) {
-    const i = durl.indexOf(',');
-    const meta = durl.slice(0, i), b64 = durl.slice(i + 1);
-    const mime = (meta.match(/data:([^;]+)/) || [])[1] || 'image/jpeg';
-    const bin = atob(b64), arr = new Uint8Array(bin.length);
-    for (let j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
-    return new File([arr], name || 'thumbnail.jpg', { type: mime });
-  }
   // basename 抽出（パス表示用）
   function baseName(p) { return (p || '').trim().replace(/\\/g, '/').split('/').pop() || ''; }
 
@@ -225,7 +216,8 @@
     const fileInput = el('input', { id: 'cyt-file', type: 'file', accept: '.txt', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
     const label = el('label', { style: 'display:block' }, ['① txtを読込', fileInput]);
     const thumbInput = el('input', { id: 'cyt-thumb', type: 'file', accept: 'image/*', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
-    const thumbLabel = el('label', { style: 'display:block' }, ['② サムネ画像(任意)', thumbInput]);
+    const thumbLabel = el('label', { style: 'display:block' }, ['② サムネ画像(毎回選択)', thumbInput]);
+    const thumbPreview = el('img', { id: 'cyt-thumb-preview', alt: 'サムネプレビュー', style: 'display:none;width:100%;border-radius:5px;border:1px solid #444' });
     const infoDiv = el('div', { id: 'cyt-info', text: '未読込', style: 'font-size:11px;color:#aaa;white-space:pre-wrap;min-height:34px;background:#000;padding:5px;border-radius:5px' });
     const mkBtn = (act, txt, extra) => el('button', Object.assign({ 'data-act': act, class: 'cyt-b', text: txt }, extra ? { style: extra } : {}));
     const grid = el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:5px' }, [
@@ -234,7 +226,7 @@
       mkBtn('all', '全部設定', 'background:#c00;border-color:#c00'),
     ]);
     const logDiv = el('div', { id: 'cyt-log', style: 'font-size:11px;max-height:120px;overflow:auto;background:#000;padding:5px;border-radius:5px' });
-    const bodyDiv = el('div', { id: 'cyt-body', style: 'padding:10px;display:flex;flex-direction:column;gap:7px' }, [label, thumbLabel, infoDiv, grid, logDiv]);
+    const bodyDiv = el('div', { id: 'cyt-body', style: 'padding:10px;display:flex;flex-direction:column;gap:7px' }, [label, thumbLabel, thumbPreview, infoDiv, grid, logDiv]);
     box.appendChild(head);
     box.appendChild(bodyDiv);
     document.body.appendChild(box);
@@ -258,15 +250,30 @@
 
     let data = null;
     let thumbFile = null;
+    let thumbURL = null;
+    const preview = box.querySelector('#cyt-thumb-preview');
+    const showPreview = () => {
+      if (thumbURL) { URL.revokeObjectURL(thumbURL); thumbURL = null; }
+      if (thumbFile) {
+        thumbURL = URL.createObjectURL(thumbFile);
+        preview.src = thumbURL;
+        preview.style.display = 'block';
+      } else {
+        preview.removeAttribute('src');
+        preview.style.display = 'none';
+      }
+    };
     const showInfo = () => {
       const lines = [];
       if (data) {
         lines.push(`Title: ${data.title}`);
         lines.push(`Desc: ${data.description.length}字 / Tags: ${data.tags.length}個`);
       }
-      if (thumbFile) lines.push('Thumb: ' + thumbFile.name + '（保存済・自動再利用）');
+      if (thumbFile) lines.push('Thumb: ' + thumbFile.name);
       else if (data && data.thumbnail) lines.push('Thumb: ' + baseName(data.thumbnail) + '（②で選択して下さい）');
+      else lines.push('Thumb: 毎回②で選択して下さい');
       info.textContent = lines.length ? lines.join('\n') : '未読込';
+      showPreview();
     };
 
     // txt を復元
@@ -274,11 +281,8 @@
       const saved = store.get(LS_KEY);
       if (saved) { data = JSON.parse(saved); log('（前回の読込内容を復元）'); }
     } catch (e) {}
-    // サムネ画像を復元（pick once → 自動再利用）
-    try {
-      const t = store.get(THUMB_KEY);
-      if (t) { const o = JSON.parse(t); thumbFile = dataURLtoFile(o.durl, o.name); log('（保存済サムネを復元: ' + o.name + '）'); }
-    } catch (e) {}
+    // サムネ画像は毎回手動選択（自動再利用しない）。旧バージョンの保存済データが残っていれば掃除
+    try { store.set(THUMB_KEY, ''); } catch (e) {}
     showInfo();
 
     box.querySelector('#cyt-file').addEventListener('change', (ev) => {
@@ -300,13 +304,8 @@
       const f = ev.target.files[0];
       if (!f) return;
       thumbFile = f;
-      const r = new FileReader();
-      r.onload = () => {
-        try { store.set(THUMB_KEY, JSON.stringify({ name: f.name, durl: r.result })); } catch (e) { log('（サムネ保存失敗: ' + e.message + '）', true); }
-        showInfo();
-        log('✔ サムネ画像: ' + f.name + '（保存→次回自動再利用）');
-      };
-      r.readAsDataURL(f);
+      showInfo();
+      log('✔ サムネ画像: ' + f.name);
     });
 
     box.querySelectorAll('.cyt-b').forEach(b => b.addEventListener('click', async () => {
