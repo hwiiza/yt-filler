@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.10
+// @version      1.11
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
@@ -214,9 +214,9 @@
       el('span', { id: 'cyt-min', text: '_', style: 'cursor:pointer' }),
     ]);
     const fileInput = el('input', { id: 'cyt-file', type: 'file', accept: '.txt', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
-    const label = el('label', { style: 'display:block' }, ['① txtを読込', fileInput]);
+    const label = el('label', { style: 'display:block' }, ['① txtを読込（D&D可）', fileInput]);
     const thumbInput = el('input', { id: 'cyt-thumb', type: 'file', accept: 'image/*', style: 'display:block;margin-top:3px;width:100%;font-size:11px' });
-    const thumbLabel = el('label', { style: 'display:block' }, ['② サムネ画像(毎回選択)', thumbInput]);
+    const thumbLabel = el('label', { style: 'display:block' }, ['② サムネ画像(毎回選択・D&D可)', thumbInput]);
     const thumbPreview = el('img', { id: 'cyt-thumb-preview', alt: 'サムネプレビュー', style: 'display:none;width:100%;border-radius:5px;border:1px solid #444' });
     const infoDiv = el('div', { id: 'cyt-info', text: '未読込', style: 'font-size:11px;color:#aaa;white-space:pre-wrap;min-height:34px;background:#000;padding:5px;border-radius:5px' });
     const mkBtn = (act, txt, extra) => el('button', Object.assign({ 'data-act': act, class: 'cyt-b', text: txt }, extra ? { style: extra } : {}));
@@ -285,9 +285,8 @@
     try { store.set(THUMB_KEY, ''); } catch (e) {}
     showInfo();
 
-    box.querySelector('#cyt-file').addEventListener('change', (ev) => {
-      const f = ev.target.files[0];
-      if (!f) return;
+    // txtファイルを読み込んでパース（input/D&D 共通）
+    const loadTxtFile = (f) => {
       const r = new FileReader();
       r.onload = () => {
         try {
@@ -298,14 +297,48 @@
         } catch (e) { log('✖ パース失敗: ' + e.message, true); }
       };
       r.readAsText(f, 'UTF-8');
+    };
+    // サムネ画像を取り込む（input/D&D 共通）
+    const loadThumbFile = (f) => {
+      thumbFile = f;
+      showInfo();
+      log('✔ サムネ画像: ' + f.name);
+    };
+    // ファイル種別で振り分け（拡張子 .txt or テキストMIME → txt、image/* → サムネ）
+    const routeFile = (f) => {
+      if (/\.txt$/i.test(f.name) || /^text\//.test(f.type)) loadTxtFile(f);
+      else if (/^image\//.test(f.type) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name)) loadThumbFile(f);
+      else log('✖ 未対応のファイル: ' + f.name + '（.txt か画像をD&D）', true);
+    };
+
+    box.querySelector('#cyt-file').addEventListener('change', (ev) => {
+      const f = ev.target.files[0];
+      if (f) loadTxtFile(f);
     });
 
     box.querySelector('#cyt-thumb').addEventListener('change', (ev) => {
       const f = ev.target.files[0];
-      if (!f) return;
-      thumbFile = f;
-      showInfo();
-      log('✔ サムネ画像: ' + f.name);
+      if (f) loadThumbFile(f);
+    });
+
+    // パネルへの D&D（txt と画像の両方を受け付け、種別で自動振り分け）
+    const dz = bodyDiv;
+    const dzBase = dz.style.outline;
+    ['dragenter', 'dragover'].forEach(t => dz.addEventListener(t, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      e.dataTransfer.dropEffect = 'copy';
+      dz.style.outline = '2px dashed #f44';
+      dz.style.outlineOffset = '-4px';
+    }));
+    ['dragleave', 'drop'].forEach(t => dz.addEventListener(t, (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (t === 'dragleave' && dz.contains(e.relatedTarget)) return; // 内側要素への移動は無視
+      dz.style.outline = dzBase;
+    }));
+    dz.addEventListener('drop', (e) => {
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || !files.length) return;
+      for (const f of files) routeFile(f);
     });
 
     box.querySelectorAll('.cyt-b').forEach(b => b.addEventListener('click', async () => {
