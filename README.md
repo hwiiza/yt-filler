@@ -6,7 +6,7 @@
 
 Tampermonkey を入れた状態で、次のリンクを開くとインストール画面が出ます：
 
-**▶ [yt-filler.user.js をインストール](https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js)**
+**▶ [yt-filler.user.js をインストール](https://hwiiza.github.io/yt-filler.user.js)**
 
 > 更新は Tampermonkey が `@updateURL` を見て自動チェックします（手動なら Tampermonkey ダッシュボード →「ユーティリティ」/各スクリプトの「更新を確認」）。
 

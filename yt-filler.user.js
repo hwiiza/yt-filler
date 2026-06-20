@@ -1,15 +1,16 @@
 // ==UserScript==
 // @name         YouTube 概要欄フィラー (yt-filler)
 // @namespace    hwiiza.yt-filler
-// @version      1.11
+// @version      1.12
 // @description  指定フォーマットの .txt を読み込み、YouTube Studio のタイトル/概要欄/タグを自動入力する（チャンネル非依存の汎用ツール）
 // @match        https://studio.youtube.com/*
 // @run-at       document-idle
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @homepageURL  https://github.com/hwiiza/yt-filler
-// @downloadURL  https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
-// @updateURL    https://raw.githubusercontent.com/hwiiza/yt-filler/main/yt-filler.user.js
+// @supportURL   https://github.com/hwiiza/yt-filler/issues
+// @downloadURL  https://hwiiza.github.io/yt-filler.user.js
+// @updateURL    https://hwiiza.github.io/yt-filler.user.js
 // ==/UserScript==
 (function () {
   'use strict';
